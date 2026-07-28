@@ -229,6 +229,9 @@ pub enum SyntaxKind {
     TIMESTAMP_DELAY_MARK,
     TIMESTAMP_VALUE,
     TIMESTAMP_UNIT,
+    // numerical UTC offset, e.g. `+0200` / `-0500`
+    TIMESTAMP_SECOND,
+    TIMESTAMP_TZ_OFFSET,
 
     #[cfg(feature = "syntax-org-fc")]
     CLOZE,

@@ -31,7 +31,17 @@ pub fn clock_node(input: Input) -> IResult<Input, GreenElement, ()> {
                 space0,
                 double_arrow_token,
                 space0,
-                recognize(tuple((digit1, colon_token, digit1))),
+                // `H:MM` and also `H:MM:SS` — the canonical CLOCK
+                // format allows seconds precision, which upstream
+                // orgize did not accept (the trailing `:SS` was left
+                // unconsumed, failing `eol_or_eof` and degrading the
+                // whole line to plain text).
+                recognize(tuple((
+                    digit1,
+                    colon_token,
+                    digit1,
+                    opt(tuple((colon_token, digit1))),
+                ))),
             ))),
             space0,
             eol_or_eof,
@@ -131,4 +141,56 @@ fn parse() {
       BLANK_LINE@63..64 "\n"
     "###
     );
+}
+
+/// Regression tests for CLOCK lines carrying a numerical UTC offset
+/// and/or seconds precision.
+///
+/// Before the fix, `[… 09:30 +0200]` failed to parse: `+0200` was
+/// swallowed by `repeater_or_delay`, which requires a trailing unit
+/// (`h`/`d`/`w`/`m`/`y`).  It matched `+`, consumed `0200`, found no
+/// unit and failed — aborting the whole timestamp, so the enclosing
+/// CLOCK line silently degraded to a plain paragraph.
+///
+/// Seconds (`09:57:20`, `=>  2:22:05`) failed for a similar reason:
+/// the trailing `:SS` was left unconsumed and broke `eol_or_eof`.
+///
+/// Both forms are valid org-mode and are produced by Emacs itself.
+#[test]
+fn parse_tz_offset_and_seconds() {
+    use crate::ast::Clock;
+    use crate::tests::to_ast;
+
+    let to_clock = to_ast::<Clock>(clock_node);
+
+    // Numerical UTC offset on both endpoints.
+    let clock =
+        to_clock("CLOCK: [2026-07-28 Tue 09:30 +0200]--[2026-07-28 Tue 11:45 +0200] =>  2:15");
+    let text = clock.syntax.to_string();
+    assert_eq!(
+        text,
+        "CLOCK: [2026-07-28 Tue 09:30 +0200]--[2026-07-28 Tue 11:45 +0200] =>  2:15"
+    );
+    assert!(clock.is_closed());
+    assert_eq!(clock.duration().map(|d| d.to_string()), Some("2:15".into()));
+
+    // Seconds precision, with offsets.
+    let clock = to_clock(
+        "CLOCK: [2026-01-07 Wed 09:57:20 +0100]--[2026-01-07 Wed 12:19:25 +0100] =>  2:22:05",
+    );
+    assert!(clock.is_closed());
+    assert_eq!(
+        clock.duration().map(|d| d.to_string()),
+        Some("2:22:05".into())
+    );
+
+    // Running clock (start only) with an offset.
+    let clock = to_clock("CLOCK: [2026-07-28 Tue 14:00 +0200]");
+    assert!(clock.is_running());
+    assert!(clock.duration().is_none());
+
+    // Negative offset.
+    let clock =
+        to_clock("CLOCK: [2026-07-28 Tue 09:30 -0500]--[2026-07-28 Tue 11:45 -0500] =>  2:15");
+    assert!(clock.is_closed());
 }

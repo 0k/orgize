@@ -84,21 +84,65 @@ fn dayname(i: Input) -> IResult<Input, GreenElement, ()> {
     )(i)
 }
 
-fn time(i: Input) -> IResult<Input, [GreenElement; 3], ()> {
+fn time(i: Input) -> IResult<Input, Vec<GreenElement>, ()> {
+    let (i, (hour, colon, minute)) = tuple((
+        take_while_m_n(2, 2, |c: char| c.is_ascii_digit()),
+        colon_token,
+        take_while_m_n(2, 2, |c: char| c.is_ascii_digit()),
+    ))(i)?;
+
+    let mut out = vec![
+        hour.token(TIMESTAMP_HOUR),
+        colon,
+        minute.token(TIMESTAMP_MINUTE),
+    ];
+
+    // Optional `:SS` seconds component.  The canonical CLOCK format
+    // permits `HH:MM:SS` on both endpoints, which upstream orgize
+    // does not model.
+    if let Ok((i2, (colon2, second))) = tuple((
+        colon_token,
+        take_while_m_n::<_, Input, ()>(2, 2, |c: char| c.is_ascii_digit()),
+    ))(i)
+    {
+        out.push(colon2);
+        out.push(second.token(TIMESTAMP_SECOND));
+        return Ok((i2, out));
+    }
+
+    Ok((i, out))
+}
+
+/// Recognizes a numerical UTC offset such as `+0200` or `-0500`.
+///
+/// MUST be attempted BEFORE [`repeater_or_delay`]: that parser also
+/// starts on `+`/`-`, consumes the digits, then requires a unit
+/// (`h|d|w|m|y`).  Given `+0200` it consumes `+`, reads `0200`, finds
+/// no unit and fails — which aborts the WHOLE timestamp and makes the
+/// enclosing CLOCK line degrade to plain text.  Trying the offset
+/// first removes that ambiguity; a genuine repeater like `+1w` does
+/// not match here (exactly four digits are required) and still falls
+/// through to `repeater_or_delay`.
+fn tz_offset(i: Input) -> IResult<Input, GreenElement, ()> {
     map(
-        tuple((
-            take_while_m_n(2, 2, |c: char| c.is_ascii_digit()),
-            colon_token,
-            take_while_m_n(2, 2, |c: char| c.is_ascii_digit()),
-        )),
-        |(hour, colon, minute)| {
-            [
-                hour.token(TIMESTAMP_HOUR),
-                colon,
-                minute.token(TIMESTAMP_MINUTE),
-            ]
-        },
+        nom::combinator::recognize(tuple((
+            alt((tag("+"), tag("-"))),
+            take_while_m_n(4, 4, |c: char| c.is_ascii_digit()),
+        ))),
+        |o: Input| o.token(TIMESTAMP_TZ_OFFSET),
     )(i)
+}
+
+/// Consume an optional ` ±HHMM` offset into `b`, returning the new input.
+fn opt_tz_offset<'a>(input: Input<'a>, b: &mut NodeBuilder) -> Input<'a> {
+    match opt(tuple((space1, tz_offset)))(input) {
+        Ok((rest, Some((ws, off)))) => {
+            b.push(ws.ws_token());
+            b.push(off);
+            rest
+        }
+        _ => input,
+    }
 }
 
 fn repeater_or_delay(
@@ -158,6 +202,8 @@ fn timestamp_node_base(
         b.push(minus);
         b.children.extend(end_time);
 
+        let input = opt_tz_offset(input, &mut b);
+
         let mut iter = iterator(input, tuple((space1, repeater_or_delay)));
         for (ws, (mark, value, unit)) in &mut iter {
             b.children.extend([ws.ws_token(), mark, value, unit]);
@@ -177,6 +223,8 @@ fn timestamp_node_base(
         b.ws(ws);
         b.children.extend(start_time);
     }
+
+    let input = opt_tz_offset(input, &mut b);
 
     let mut iter = iterator(input, tuple((space1, repeater_or_delay)));
     for (ws, (mark, value, unit)) in &mut iter {
@@ -207,6 +255,7 @@ fn timestamp_node_base(
             b.ws(ws);
             b.children.extend(end_time);
         }
+        let input = opt_tz_offset(input, &mut b);
         let mut iter = iterator(input, tuple((space1, repeater_or_delay)));
         for (ws, (mark, value, unit)) in &mut iter {
             b.children.extend([ws.ws_token(), mark, value, unit]);
