@@ -2,7 +2,7 @@ use nom::{
     bytes::complete::take_while,
     combinator::{map, opt},
     sequence::tuple,
-    IResult,
+    IResult, InputTake,
 };
 
 use super::{
@@ -14,6 +14,39 @@ use super::{
     SyntaxKind::*,
 };
 
+/// Consumes a link path, honoring org's backslash escapes.
+///
+/// Stops at the first `<`, `>`, newline, or `]` that is *not* escaped.
+/// A backslash makes the following character part of the path, so
+/// `\]` and `\[` do not delimit anything and `\\` is consumed as one
+/// unit (its second backslash cannot escape a subsequent `]`).
+///
+/// This mirrors Emacs, which strips those backslashes with
+/// `org-link-unescape` after parsing. Decoding is the caller's job:
+/// the token stays verbatim so the source can be reproduced byte for
+/// byte.
+fn link_path(input: Input) -> IResult<Input, Input, ()> {
+    let s = input.as_str();
+    let mut end = s.len();
+    let mut chars = s.char_indices();
+    while let Some((idx, c)) = chars.next() {
+        match c {
+            // Consume the escaped character along with the backslash.
+            // A trailing backslash escapes nothing and is kept as-is.
+            '\\' => {
+                chars.next();
+            }
+            '<' | '>' | '\n' | ']' => {
+                end = idx;
+                break;
+            }
+            _ => {}
+        }
+    }
+    let (rest, path) = input.take_split(end);
+    Ok((rest, path))
+}
+
 #[cfg_attr(
     feature = "tracing",
     tracing::instrument(level = "debug", skip(input), fields(input = input.s))
@@ -22,7 +55,7 @@ pub fn link_node(input: Input) -> IResult<Input, GreenElement, ()> {
     let mut parser = map(
         tuple((
             l_bracket2_token,
-            take_while(|c: char| c != '<' && c != '>' && c != '\n' && c != ']'),
+            link_path,
             opt(tuple((
                 r_bracket_token,
                 l_bracket_token,
@@ -109,4 +142,41 @@ fn parse() {
     let config = &ParseConfig::default();
 
     assert!(link_node(("[[#id][desc]", config).into()).is_err());
+}
+
+/// A `]` written as `\]` inside a link path is escaped content, not the
+/// end of the path. Org itself emits this form: `org-store-link` on a
+/// headline titled `[2026-07-15] Note` produces
+/// `[[file:a.org::*\[2026-07-15\] Note][…]]`, and `org-link-unescape`
+/// turns `\[`/`\]` back into `[`/`]` when the link is followed.
+#[test]
+fn parse_escaped_brackets_in_path() {
+    use crate::{ast::Link, tests::to_ast};
+
+    let to_link = to_ast::<Link>(link_node);
+
+    // Escaped closing bracket must not terminate the path.
+    let link = to_link(r"[[file:a.org::*A\]B][desc]]");
+    assert_eq!(link.path(), r"file:a.org::*A\]B");
+
+    // Escaped opening bracket, already accepted before this fix.
+    let link = to_link(r"[[file:a.org::*A\[B][desc]]");
+    assert_eq!(link.path(), r"file:a.org::*A\[B");
+
+    // Both, as produced by `org-store-link` for a bracketed headline.
+    let link = to_link(r"[[file:a.org::*\[2026-07-15\] Note][desc]]");
+    assert_eq!(link.path(), r"file:a.org::*\[2026-07-15\] Note");
+
+    // Without a description.
+    let link = to_link(r"[[file:a.org::*\[X\]]]");
+    assert_eq!(link.path(), r"file:a.org::*\[X\]");
+
+    // An escaped backslash is itself atomic: the `\\` pair is consumed
+    // whole, so the following `]` still closes the path.
+    let link = to_link(r"[[file:a\\][desc]]");
+    assert_eq!(link.path(), r"file:a\\");
+
+    // Unescaped `]` keeps terminating the path (no behavior change).
+    let link = to_link("[[file:a.org][desc]]");
+    assert_eq!(link.path(), "file:a.org");
 }
