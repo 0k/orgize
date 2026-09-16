@@ -1,5 +1,4 @@
 use nom::{
-    bytes::complete::take_while,
     combinator::{map, opt},
     sequence::tuple,
     IResult, InputTake,
@@ -47,6 +46,33 @@ fn link_path(input: Input) -> IResult<Input, Input, ()> {
     Ok((rest, path))
 }
 
+/// Consumes a link description, stopping at the first `]]`.
+///
+/// Brackets and newlines are ordinary description content: only `]]`
+/// terminates. This mirrors Emacs, whose `org-link-bracket-re` matches
+/// the description with `\([^z-a]+?\)` — any character, newline
+/// included, non-greedy up to the closing `]]`. A scan that stopped at
+/// any `[` or `]` instead made every link with a bracketed description
+/// fail to parse and vanish from the tree.
+///
+/// An empty description is accepted, so `[[path][]]` stays the link it
+/// has always been. Emacs parses that form too (reporting no
+/// description); rejecting it here would delete a link the rest of the
+/// world can follow.
+///
+/// The token stays verbatim: decoding escapes is the caller's job,
+/// which keeps the parser lossless and lets the source be reproduced
+/// byte for byte.
+fn link_description(input: Input) -> IResult<Input, Input, ()> {
+    let s = input.as_str();
+    let end = s
+        .char_indices()
+        .find(|&(idx, c)| c == ']' && s[idx..].starts_with("]]"))
+        .map_or(s.len(), |(idx, _)| idx);
+    let (rest, description) = input.take_split(end);
+    Ok((rest, description))
+}
+
 #[cfg_attr(
     feature = "tracing",
     tracing::instrument(level = "debug", skip(input), fields(input = input.s))
@@ -56,11 +82,7 @@ pub fn link_node(input: Input) -> IResult<Input, GreenElement, ()> {
         tuple((
             l_bracket2_token,
             link_path,
-            opt(tuple((
-                r_bracket_token,
-                l_bracket_token,
-                take_while(|c: char| c != '[' && c != ']'),
-            ))),
+            opt(tuple((r_bracket_token, l_bracket_token, link_description))),
             r_bracket2_token,
         )),
         |(l_bracket2, path, desc, r_bracket2)| {
@@ -142,6 +164,201 @@ fn parse() {
     let config = &ParseConfig::default();
 
     assert!(link_node(("[[#id][desc]", config).into()).is_err());
+}
+
+#[test]
+fn parse_description_according_to_org_mode() {
+    use crate::{ast::Link, tests::to_ast};
+
+    let to_link = to_ast::<Link>(link_node);
+    let cases = [
+        "[[file:A.org][plain]]",
+        "[[file:A.org][has [bracket] pair]]",
+        "[[file:A.org][ends with date [2026-08-30]]]",
+        "[[file:A.org][open [ only]]",
+        "[[file:A.org][close ] only]]",
+        "[[file:A.org][nested [[inner]] thing]]",
+        "[[file:A.org][a]b]]",
+        "[[file:A.org][a]]b]]",
+        "[[file:A.org][trailing bracket ]]]",
+        r"[[file:A.org][desc with \] escape]]",
+        "[[file:A.org]]",
+        "[[file:A.org][multi\nline desc]]",
+    ];
+    let parsed = cases.map(|input| {
+        let link = to_link(input);
+        (
+            input,
+            link.path().to_string(),
+            link.has_description().then(|| link.description_raw()),
+        )
+    });
+
+    insta::assert_debug_snapshot!(parsed, @r###"
+    [
+        (
+            "[[file:A.org][plain]]",
+            "file:A.org",
+            Some(
+                "plain",
+            ),
+        ),
+        (
+            "[[file:A.org][has [bracket] pair]]",
+            "file:A.org",
+            Some(
+                "has [bracket] pair",
+            ),
+        ),
+        (
+            "[[file:A.org][ends with date [2026-08-30]]]",
+            "file:A.org",
+            Some(
+                "ends with date [2026-08-30",
+            ),
+        ),
+        (
+            "[[file:A.org][open [ only]]",
+            "file:A.org",
+            Some(
+                "open [ only",
+            ),
+        ),
+        (
+            "[[file:A.org][close ] only]]",
+            "file:A.org",
+            Some(
+                "close ] only",
+            ),
+        ),
+        (
+            "[[file:A.org][nested [[inner]] thing]]",
+            "file:A.org",
+            Some(
+                "nested [[inner",
+            ),
+        ),
+        (
+            "[[file:A.org][a]b]]",
+            "file:A.org",
+            Some(
+                "a]b",
+            ),
+        ),
+        (
+            "[[file:A.org][a]]b]]",
+            "file:A.org",
+            Some(
+                "a",
+            ),
+        ),
+        (
+            "[[file:A.org][trailing bracket ]]]",
+            "file:A.org",
+            Some(
+                "trailing bracket ",
+            ),
+        ),
+        (
+            "[[file:A.org][desc with \\] escape]]",
+            "file:A.org",
+            Some(
+                "desc with \\] escape",
+            ),
+        ),
+        (
+            "[[file:A.org]]",
+            "file:A.org",
+            None,
+        ),
+        (
+            "[[file:A.org][multi\nline desc]]",
+            "file:A.org",
+            Some(
+                "multi\nline desc",
+            ),
+        ),
+    ]
+    "###);
+}
+
+#[test]
+fn parse_objects_in_description() {
+    use crate::{ast::Link, tests::to_ast};
+
+    let link = to_ast::<Link>(link_node)("[[file:A.org][*bold* and /it/]]");
+
+    insta::assert_debug_snapshot!(link.syntax, @r###"
+    LINK@0..31
+      L_BRACKET2@0..2 "[["
+      LINK_PATH@2..12 "file:A.org"
+      R_BRACKET@12..13 "]"
+      L_BRACKET@13..14 "["
+      BOLD@14..20
+        STAR@14..15 "*"
+        TEXT@15..19 "bold"
+        STAR@19..20 "*"
+      TEXT@20..25 " and "
+      ITALIC@25..29
+        SLASH@25..26 "/"
+        TEXT@26..28 "it"
+        SLASH@28..29 "/"
+      R_BRACKET2@29..31 "]]"
+    "###);
+    assert_eq!(link.description_raw(), "*bold* and /it/");
+}
+
+/// `[[path][]]` is a link, not a parse failure.
+///
+/// Emacs parses this form and simply reports no description, so
+/// rejecting it would delete a link that every other org consumer
+/// follows. Pinned because the obvious reading of "the description is
+/// one-or-more characters" says the opposite, and acting on that
+/// reading silently dropped the `[[id:empty][]]` node.
+#[test]
+fn parse_empty_description_as_a_link() {
+    use crate::{ast::Link, tests::to_ast};
+
+    let link = to_ast::<Link>(link_node)("[[file:A.org][]]");
+
+    insta::assert_debug_snapshot!(link.syntax, @r###"
+    LINK@0..16
+      L_BRACKET2@0..2 "[["
+      LINK_PATH@2..12 "file:A.org"
+      R_BRACKET@12..13 "]"
+      L_BRACKET@13..14 "["
+      R_BRACKET2@14..16 "]]"
+    "###);
+    assert_eq!(link.path(), "file:A.org");
+}
+
+#[test]
+fn parse_two_links_without_swallowing() {
+    use rowan::ast::AstNode;
+
+    use crate::{ast::Link, Org};
+
+    let org = Org::parse("text [[file:A.org][desc]] then [[file:B.org][second]]");
+    let links = org
+        .document()
+        .syntax()
+        .descendants()
+        .filter_map(Link::cast)
+        .map(|link| (link.path().to_string(), link.description_raw()))
+        .collect::<Vec<_>>();
+
+    insta::assert_debug_snapshot!(links, @r###"
+    [
+        (
+            "file:A.org",
+            "desc",
+        ),
+        (
+            "file:B.org",
+            "second",
+        ),
+    ]
+    "###);
 }
 
 /// A `]` written as `\]` inside a link path is escaped content, not the
