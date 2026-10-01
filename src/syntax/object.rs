@@ -13,7 +13,7 @@ use super::{
     input::Input,
     latex_fragment::latex_fragment_node,
     line_break::line_break_node,
-    link::link_node,
+    link::{link_node, plain_link_node},
     macros::macros_node,
     radio_target::radio_target_node,
     snippet::snippet_node,
@@ -26,6 +26,7 @@ struct ObjectPositions<'a> {
     input: Input<'a>,
     pos: usize,
     finder: jetscii::BytesConst,
+    plain_links: bool,
 }
 
 impl ObjectPositions<'_> {
@@ -33,6 +34,7 @@ impl ObjectPositions<'_> {
         ObjectPositions {
             input,
             pos: 0,
+            plain_links: true,
             finder: jetscii::bytes!(
                 b'*', b'+', b'/', b'_', b'=', b'~', /* text markup */
                 b'@', /* snippet */
@@ -52,6 +54,7 @@ impl ObjectPositions<'_> {
         ObjectPositions {
             input,
             pos: 0,
+            plain_links: false,
             finder: jetscii::bytes!(
                 b'*', b'+', b'/', b'_', b'=', b'~', /* text markup */
                 b'\\', b'$', /* latex & entity */
@@ -65,6 +68,7 @@ impl ObjectPositions<'_> {
         ObjectPositions {
             input,
             pos: 0,
+            plain_links: false,
             finder: jetscii::bytes!(
                 b'*', b'+', b'/', b'_', b'=', b'~', /* text markup */
                 b'\\', b'$', /* latex & entity */
@@ -89,7 +93,17 @@ impl<'a> Iterator for ObjectPositions<'a> {
         }
 
         let previous = self.pos;
-        let i = self.finder.find(&self.input.as_bytes()[self.pos..])?;
+        let remaining = &self.input.as_bytes()[self.pos..];
+        let original = self.finder.find(remaining);
+        let plain = self
+            .plain_links
+            .then(|| {
+                remaining
+                    .iter()
+                    .position(|b| matches!(b, b'h' | b'f' | b'm' | b'd' | b'n'))
+            })
+            .flatten();
+        let i = original.into_iter().chain(plain).min()?;
         let p = self.pos + i;
 
         self.pos = p + 1;
@@ -188,6 +202,15 @@ pub fn standard_object_nodes(input: Input) -> Vec<GreenElement> {
             // same pre tokens rule as text markup
             b'c' if emphasis::verify_pre(pre.s) => inline_call_node(i),
             b's' if emphasis::verify_pre(pre.s) => inline_src_node(i),
+            b'h' | b'f' | b'm' | b'd' | b'n'
+                if pre
+                    .s
+                    .chars()
+                    .next_back()
+                    .is_none_or(|c| !c.is_alphanumeric() && c != '_' && c != '/' && c != ':') =>
+            {
+                plain_link_node(i)
+            }
             b'$' => latex_fragment_node(i),
             b'\\' if !pre.s.ends_with('\\') && i.as_bytes()[1] == b'\\' => line_break_node(i),
             b'\\' => entity_node(i).or_else(|_| latex_fragment_node(i)),

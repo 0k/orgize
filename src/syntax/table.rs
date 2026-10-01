@@ -9,13 +9,13 @@ use nom::{
 use super::{
     combinator::{blank_lines, line_ends_iter, node, pipe_token, GreenElement, NodeBuilder},
     input::Input,
-    keyword::tblfm_keyword_nodes,
+    keyword::{affiliated_keyword_nodes, tblfm_keyword_nodes},
     object::standard_object_nodes,
     SyntaxKind::*,
 };
 
 fn org_table_node_base(input: Input) -> IResult<Input, GreenElement, ()> {
-    let mut children = vec![];
+    let (input, mut children) = affiliated_keyword_nodes(input)?;
 
     let mut start = 0;
     for i in line_ends_iter(input.as_str()) {
@@ -94,6 +94,7 @@ fn table_standard_row_node(input: Input) -> Result<GreenElement, nom::Err<()>> {
 }
 
 fn table_el_node_base(input: Input) -> IResult<Input, GreenElement, ()> {
+    let (input, mut children) = affiliated_keyword_nodes(input)?;
     let mut start = 0;
     for i in line_ends_iter(input.as_str()) {
         let line = &input.s[start..i];
@@ -117,7 +118,6 @@ fn table_el_node_base(input: Input) -> IResult<Input, GreenElement, ()> {
     let (input, contents) = input.take_split(start);
     let (input, post_blank) = blank_lines(input)?;
 
-    let mut children = vec![];
     children.push(contents.text_token());
     children.extend(post_blank);
 
@@ -262,4 +262,44 @@ fn parse_table_el() {
 
     assert!(table_el_node(("", config).into()).is_err());
     assert!(table_el_node(("+----|---", config).into()).is_err());
+}
+
+#[test]
+fn tables_accept_affiliated_keywords() {
+    use crate::{
+        ast::{OrgTable, TableEl},
+        tests::to_ast,
+    };
+
+    let table = to_ast::<OrgTable>(org_table_node)("#+CAPTION: Caption\n#+NAME: hours\n| A |\n");
+    assert_eq!(
+        table.syntax.to_string(),
+        "#+CAPTION: Caption\n#+NAME: hours\n| A |\n"
+    );
+    assert_eq!(
+        table
+            .syntax
+            .children()
+            .filter(|child| child.kind() == AFFILIATED_KEYWORD)
+            .count(),
+        2
+    );
+    assert_eq!(
+        table
+            .syntax
+            .children()
+            .filter(|child| child.kind() == ORG_TABLE_STANDARD_ROW)
+            .count(),
+        1
+    );
+
+    let table_el = to_ast::<TableEl>(table_el_node)("#+NAME: grid\n+---+\n| A |\n+---+\n");
+    assert_eq!(
+        table_el
+            .syntax
+            .children()
+            .filter(|child| child.kind() == AFFILIATED_KEYWORD)
+            .count(),
+        1
+    );
 }

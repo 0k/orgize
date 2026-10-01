@@ -290,7 +290,10 @@ fn affiliated_keywords() {
         COLON@29..30 ":"
         TEXT@30..34 "WORD"
         R_BRACKET@34..35 "]"
-        TEXT@35..55 " https://orgmode.org"
+        PARAGRAPH@35..55
+          TEXT@35..36 " "
+          LINK@36..55
+            LINK_PATH@36..55 "https://orgmode.org"
     "###
     );
 
@@ -336,4 +339,35 @@ fn affiliated_keywords() {
         TEXT@10..26 " Longer caption."
     "###
     );
+}
+
+#[test]
+fn affiliated_keywords_attach_to_rules_drawers_and_latex_environments() {
+    use crate::{Org, SyntaxKind};
+    for (input, kind) in [
+        ("#+CAPTION: Rule\n-----\n", SyntaxKind::RULE),
+        (
+            "#+CAPTION: Drawer\n:NOTE:\nContents\n:END:\n",
+            SyntaxKind::DRAWER,
+        ),
+        (
+            "#+CAPTION: Math\n\\begin{equation}\nx\n\\end{equation}\n",
+            SyntaxKind::LATEX_ENVIRONMENT,
+        ),
+    ] {
+        let org = Org::parse(input);
+        let element = org
+            .document()
+            .syntax
+            .descendants()
+            .find(|node| node.kind() == kind)
+            .expect("affiliated element must parse");
+        assert_eq!(
+            element
+                .children()
+                .filter(|child| child.kind() == SyntaxKind::AFFILIATED_KEYWORD)
+                .count(),
+            1
+        );
+    }
 }

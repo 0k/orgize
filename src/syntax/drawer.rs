@@ -13,6 +13,7 @@ use super::{
     },
     element::element_nodes,
     input::Input,
+    keyword::affiliated_keyword_nodes,
     SyntaxKind::*,
 };
 
@@ -60,6 +61,7 @@ fn drawer_end_node(input: Input) -> IResult<Input, GreenElement, ()> {
 }
 
 fn drawer_node_base(input: Input) -> IResult<Input, GreenElement, ()> {
+    let (input, affiliated) = affiliated_keyword_nodes(input)?;
     let (input, (begin, _)) = drawer_begin_node(input)?;
 
     let (input, pre_blank) = blank_lines(input)?;
@@ -67,7 +69,8 @@ fn drawer_node_base(input: Input) -> IResult<Input, GreenElement, ()> {
     for (input, contents) in line_starts_iter(input.as_str()).map(|i| input.take_split(i)) {
         if let Ok((input, end)) = drawer_end_node(input) {
             let (input, post_blank) = blank_lines(input)?;
-            let mut children = vec![begin];
+            let mut children = affiliated;
+            children.push(begin);
             children.extend(pre_blank);
             if !contents.is_empty() {
                 children.push(node(DRAWER_CONTENT, element_nodes(contents)?));

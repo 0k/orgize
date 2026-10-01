@@ -7,11 +7,12 @@ use nom::{
 
 use super::{
     combinator::{
-        blank_lines, colon_token, l_bracket_token, r_bracket_token, trim_line_end, GreenElement,
-        NodeBuilder,
+        blank_lines, colon_token, l_bracket_token, node, r_bracket_token, trim_line_end,
+        GreenElement, NodeBuilder,
     },
     input::Input,
     keyword::affiliated_keyword_nodes,
+    object::standard_object_nodes,
     SyntaxKind,
 };
 
@@ -48,7 +49,9 @@ pub fn fn_def_node(input: Input) -> IResult<Input, GreenElement, ()> {
             b.push(colon);
             b.text(label);
             b.push(r_bracket);
-            b.text(content);
+            if !content.is_empty() {
+                b.push(node(SyntaxKind::PARAGRAPH, standard_object_nodes(content)));
+            }
             b.ws(ws_);
             b.nl(nl);
             b.children.extend(post_blank);
@@ -56,6 +59,20 @@ pub fn fn_def_node(input: Input) -> IResult<Input, GreenElement, ()> {
         },
     );
     crate::lossless_parser!(parser, input)
+}
+
+#[test]
+fn footnote_definition_content_parses_inline_objects() {
+    use crate::{ast::FnDef, tests::to_ast, SyntaxKind};
+    let definition = to_ast::<FnDef>(fn_def_node)("[fn:note] A *bold* definition.\n");
+    let paragraph = definition
+        .syntax
+        .children()
+        .find(|child| child.kind() == SyntaxKind::PARAGRAPH)
+        .unwrap();
+    assert!(paragraph
+        .children()
+        .any(|child| child.kind() == SyntaxKind::BOLD));
 }
 
 #[test]
@@ -74,7 +91,10 @@ fn parse() {
       COLON@3..4 ":"
       TEXT@4..5 "1"
       R_BRACKET@5..6 "]"
-      TEXT@6..26 " https://orgmode.org"
+      PARAGRAPH@6..26
+        TEXT@6..7 " "
+        LINK@7..26
+          LINK_PATH@7..26 "https://orgmode.org"
     "###
     );
 
@@ -87,7 +107,10 @@ fn parse() {
       COLON@3..4 ":"
       TEXT@4..10 "word_1"
       R_BRACKET@10..11 "]"
-      TEXT@11..31 " https://orgmode.org"
+      PARAGRAPH@11..31
+        TEXT@11..12 " "
+        LINK@12..31
+          LINK_PATH@12..31 "https://orgmode.org"
     "###
     );
 
@@ -100,7 +123,10 @@ fn parse() {
       COLON@3..4 ":"
       TEXT@4..10 "WORD-1"
       R_BRACKET@10..11 "]"
-      TEXT@11..31 " https://orgmode.org"
+      PARAGRAPH@11..31
+        TEXT@11..12 " "
+        LINK@12..31
+          LINK_PATH@12..31 "https://orgmode.org"
     "###
     );
 
@@ -125,7 +151,8 @@ fn parse() {
       COLON@3..4 ":"
       TEXT@4..5 "1"
       R_BRACKET@5..6 "]"
-      TEXT@6..65 " In particular, the p ..."
+      PARAGRAPH@6..65
+        TEXT@6..65 " In particular, the p ..."
       NEW_LINE@65..66 "\n"
     "###
     );
@@ -151,7 +178,10 @@ fn parse() {
       COLON@17..18 ":"
       TEXT@18..24 "WORD-1"
       R_BRACKET@24..25 "]"
-      TEXT@25..45 " https://orgmode.org"
+      PARAGRAPH@25..45
+        TEXT@25..26 " "
+        LINK@26..45
+          LINK_PATH@26..45 "https://orgmode.org"
     "###
     );
 }

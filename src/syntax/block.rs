@@ -15,6 +15,7 @@ use super::{
     element::element_nodes,
     input::Input,
     keyword::affiliated_keyword_nodes,
+    object::standard_object_nodes,
     SyntaxKind::*,
 };
 
@@ -44,6 +45,16 @@ fn block_node_base(input: Input) -> IResult<Input, GreenElement, ()> {
             children.extend(pre_blank);
             if kind.is_greater_element() {
                 children.push(node(BLOCK_CONTENT, element_nodes(contents)?));
+            } else if kind == VERSE_BLOCK {
+                let mut objects = Vec::new();
+                for element in comma_quoted_text_nodes(contents) {
+                    if element.kind() == TEXT.into() {
+                        objects.extend(standard_object_nodes(contents.of(&element.to_string())));
+                    } else {
+                        objects.push(element);
+                    }
+                }
+                children.push(node(BLOCK_CONTENT, objects));
             } else {
                 children.push(node(BLOCK_CONTENT, comma_quoted_text_nodes(contents)));
             }
@@ -192,6 +203,20 @@ fn comma_quoted_text_nodes(input: Input) -> Vec<GreenElement> {
 )]
 pub fn block_node(input: Input) -> IResult<Input, GreenElement, ()> {
     crate::lossless_parser!(block_node_base, input)
+}
+
+#[test]
+fn verse_body_parses_objects_and_preserves_newlines() {
+    use crate::{ast::VerseBlock, tests::to_ast};
+    let verse =
+        to_ast::<VerseBlock>(block_node)("#+begin_verse\nA /soft/ line\nand more\n#+end_verse\n");
+    let content = verse
+        .syntax
+        .children()
+        .find(|child| child.kind() == BLOCK_CONTENT)
+        .unwrap();
+    assert!(content.children().any(|child| child.kind() == ITALIC));
+    assert_eq!(content.to_string(), "A /soft/ line\nand more\n");
 }
 
 #[test]

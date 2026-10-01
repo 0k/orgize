@@ -10,6 +10,7 @@ use crate::SyntaxKind;
 use super::{
     combinator::{eol_or_eof, l_curly_token, line_starts_iter, node, r_curly_token, GreenElement},
     input::Input,
+    keyword::affiliated_keyword_nodes,
 };
 
 #[cfg_attr(
@@ -21,6 +22,7 @@ pub fn latex_environment_node(input: Input) -> IResult<Input, GreenElement, ()> 
 }
 
 fn latex_environment_node_base(input: Input) -> IResult<Input, GreenElement, ()> {
+    let (input, affiliated) = affiliated_keyword_nodes(input)?;
     let (input, (ws1, begin, l1, name1, r1)) = tuple((
         space0,
         tag("\\begin"),
@@ -44,21 +46,24 @@ fn latex_environment_node_base(input: Input) -> IResult<Input, GreenElement, ()>
                 input,
                 node(
                     SyntaxKind::LATEX_ENVIRONMENT,
-                    [
-                        ws1.ws_token(),
-                        begin.text_token(),
-                        l1,
-                        name1.text_token(),
-                        r1,
-                        contents.text_token(),
-                        ws2.ws_token(),
-                        end.text_token(),
-                        l2,
-                        name2.text_token(),
-                        r2,
-                        ws3.ws_token(),
-                        nl.nl_token(),
-                    ],
+                    affiliated
+                        .into_iter()
+                        .chain([
+                            ws1.ws_token(),
+                            begin.text_token(),
+                            l1,
+                            name1.text_token(),
+                            r1,
+                            contents.text_token(),
+                            ws2.ws_token(),
+                            end.text_token(),
+                            l2,
+                            name2.text_token(),
+                            r2,
+                            ws3.ws_token(),
+                            nl.nl_token(),
+                        ])
+                        .collect::<Vec<_>>(),
                 ),
             ));
         }

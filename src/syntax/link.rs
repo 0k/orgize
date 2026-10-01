@@ -101,6 +101,58 @@ pub fn link_node(input: Input) -> IResult<Input, GreenElement, ()> {
     crate::lossless_parser!(parser, input)
 }
 
+/// Parse an Org plain link as the same LINK/LINK_PATH pair as a bracket link.
+pub fn plain_link_node(input: Input) -> IResult<Input, GreenElement, ()> {
+    let s = input.as_str();
+    let prefix = [
+        "https:", "http:", "ftp:", "mailto:", "file:", "doi:", "news:",
+    ]
+    .into_iter()
+    .find(|prefix| s.starts_with(prefix))
+    .ok_or(nom::Err::Error(()))?;
+    let mut end = s
+        .char_indices()
+        .find(|&(i, c)| {
+            i >= prefix.len() && (c.is_whitespace() || matches!(c, '<' | '>' | '[' | ']'))
+        })
+        .map_or(s.len(), |(i, _)| i);
+    while end > prefix.len()
+        && matches!(
+            s.as_bytes()[end - 1],
+            b'.' | b',' | b';' | b':' | b'!' | b'?' | b')'
+        )
+    {
+        end -= 1;
+    }
+    if end == prefix.len() {
+        return Err(nom::Err::Error(()));
+    }
+    let (rest, path) = input.take_split(end);
+    Ok((rest, node(LINK, [path.token(LINK_PATH)])))
+}
+
+#[test]
+fn plain_links_respect_protocols_and_terminal_punctuation() {
+    use crate::{ast::Link, tests::to_ast, ParseConfig};
+
+    let parse = to_ast::<Link>(plain_link_node);
+    for path in [
+        "https://orgmode.org",
+        "http://example.org/x",
+        "ftp://host/a",
+        "mailto:a@example.org",
+        "file:/tmp/a.org",
+        "doi:10.1000/xyz",
+        "news:comp.emacs",
+    ] {
+        assert_eq!(parse(path).path().to_string(), path);
+    }
+    let config = ParseConfig::default();
+    let (rest, link) = plain_link_node(("https://orgmode.org.),", &config).into()).unwrap();
+    assert_eq!(link.to_string(), "https://orgmode.org");
+    assert_eq!(rest.s, ".),");
+}
+
 #[test]
 fn parse() {
     use crate::{ast::Link, tests::to_ast, ParseConfig};

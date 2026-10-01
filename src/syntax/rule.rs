@@ -6,20 +6,23 @@ use nom::{
 use super::{
     combinator::{blank_lines, eol_or_eof, GreenElement, NodeBuilder},
     input::Input,
+    keyword::affiliated_keyword_nodes,
     SyntaxKind::*,
 };
 
 pub fn rule_node(input: Input) -> IResult<Input, GreenElement, ()> {
     let mut parser = map(
         tuple((
+            affiliated_keyword_nodes,
             space0,
             take_while_m_n(5, usize::max_value(), |c| c == '-'),
             space0,
             eol_or_eof,
             blank_lines,
         )),
-        |(ws, dashes, ws_, nl, post_blank)| {
+        |(affiliated, ws, dashes, ws_, nl, post_blank)| {
             let mut b = NodeBuilder::new();
+            b.children.extend(affiliated);
             b.ws(ws);
             b.text(dashes);
             b.ws(ws_);
